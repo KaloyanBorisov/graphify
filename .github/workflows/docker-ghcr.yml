@@ -1,23 +1,23 @@
 name: Build & publish image to GHCR
 
-# Builds the upstream Graphify-Labs/graphify v8 branch with its own Dockerfile
-# and publishes ghcr.io/<owner>/graphify. Building straight from upstream (instead
-# of syncing this fork first) means upstream workflow-file changes can never
-# break the sync, and this fork only needs to carry this one file.
+# Builds this fork's v8 branch with the repo's own Dockerfile and publishes
+# ghcr.io/<owner>/graphify. Triggered by pushes to v8, which includes clicking
+# "Sync fork" on GitHub or running `gh repo sync` to pull in upstream
+# Graphify-Labs/graphify changes, plus any patch committed to this fork.
 
 on:
-  schedule:
-    - cron: "17 10 * * *"   # daily, 02:17 PT
+  push:
+    branches: [v8]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "worked/**"
   workflow_dispatch:
     inputs:
       force:
-        description: "Rebuild even if this upstream commit is already published"
+        description: "Rebuild even if this commit is already published"
         type: boolean
         default: false
-      ref:
-        description: "Upstream branch, tag or commit to build"
-        type: string
-        default: "v8"
 
 permissions:
   contents: read
@@ -25,20 +25,14 @@ permissions:
 
 concurrency:
   group: docker-ghcr
-  cancel-in-progress: false
-
-env:
-  UPSTREAM: Graphify-Labs/graphify
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out upstream
+      - name: Check out
         uses: actions/checkout@v4
-        with:
-          repository: ${{ env.UPSTREAM }}
-          ref: ${{ inputs.ref || 'v8' }}
 
       - name: Resolve version and image name
         id: meta
@@ -50,7 +44,7 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
           echo "full_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "Upstream ${{ env.UPSTREAM }} @ ${sha} (version ${version})"
+          echo "Building ${{ github.repository }} @ ${sha} (version ${version})"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -90,6 +84,6 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.meta.outputs.full_sha }}
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
-            org.opencontainers.image.description=Graphify MCP server built from ${{ env.UPSTREAM }}@${{ steps.meta.outputs.sha }}
+            org.opencontainers.image.description=Graphify MCP server built from ${{ github.repository }}@${{ steps.meta.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
