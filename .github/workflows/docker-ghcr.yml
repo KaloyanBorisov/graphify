@@ -1,0 +1,95 @@
+name: Build & publish image to GHCR
+
+# Builds the upstream Graphify-Labs/graphify v8 branch with its own Dockerfile
+# and publishes ghcr.io/<owner>/graphify. Building straight from upstream (instead
+# of syncing this fork first) means upstream workflow-file changes can never
+# break the sync, and this fork only needs to carry this one file.
+
+on:
+  schedule:
+    - cron: "17 10 * * *"   # daily, 02:17 PT
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild even if this upstream commit is already published"
+        type: boolean
+        default: false
+      ref:
+        description: "Upstream branch, tag or commit to build"
+        type: string
+        default: "v8"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-ghcr
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: Graphify-Labs/graphify
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out upstream
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ inputs.ref || 'v8' }}
+
+      - name: Resolve version and image name
+        id: meta
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          version="$(grep -m1 -E '^version\s*=' pyproject.toml | sed -E 's/.*"(.*)".*/\1/')"
+          sha="$(git rev-parse --short=8 HEAD)"
+          echo "image=ghcr.io/${owner}/graphify" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "full_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Upstream ${{ env.UPSTREAM }} @ ${sha} (version ${version})"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip if this commit is already published
+        id: check
+        run: |
+          if [ "${{ inputs.force }}" != "true" ] && \
+             docker manifest inspect "${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.sha }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "sha-${{ steps.meta.outputs.sha }} already published, nothing to do."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Buildx
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        if: steps.check.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:sha-${{ steps.meta.outputs.sha }}
+          labels: |
+            org.opencontainers.image.title=graphify
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.meta.outputs.full_sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.description=Graphify MCP server built from ${{ env.UPSTREAM }}@${{ steps.meta.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
